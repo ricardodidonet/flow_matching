@@ -103,13 +103,12 @@ def demo_training():
             dx_t = path_sample.dx_t
 
             # Forward pass
-            predicted_velocity = model(
-                x_t=x_t,
-                t=t,
-                x_prev_1=x_prev_1,
-                x_prev_2=x_prev_2,
-                case_params=case_params_batch
-            )
+            extra = {
+                'x_prev_1': x_prev_1,
+                'x_prev_2': x_prev_2,
+                'case_params': case_params_batch
+            }
+            predicted_velocity = model(x_t, t, extra)
 
             # Loss
             loss = torch.nn.functional.mse_loss(predicted_velocity, dx_t)
@@ -155,7 +154,12 @@ def demo_training():
                 batch_size = x.shape[0]
                 if t.dim() == 0:
                     t = t.repeat(batch_size)
-                return self.model(x, t, self.x_prev_1, self.x_prev_2, self.case_params)
+                extra = {
+                    'x_prev_1': self.x_prev_1,
+                    'x_prev_2': self.x_prev_2,
+                    'case_params': self.case_params
+                }
+                return self.model(x, t, extra)
 
         wrapped_model = ModelWrapper(model, x_prev_1, x_prev_2, test_params)
         solver = ODESolver(wrapped_model)

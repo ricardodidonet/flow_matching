@@ -139,13 +139,12 @@ def train_epoch(model, dataloader, optimizer, path, device, args, epoch):
         dx_t = path_sample.dx_t  # Target velocity: x_1 - x_0
 
         # Forward pass: predict velocity field conditioned on previous states
-        predicted_velocity = model(
-            x_t=x_t,
-            t=t,
-            x_prev_1=x_prev_1,
-            x_prev_2=x_prev_2,
-            case_params=case_params
-        )
+        extra = {
+            'x_prev_1': x_prev_1,
+            'x_prev_2': x_prev_2,
+            'case_params': case_params
+        }
+        predicted_velocity = model(x_t, t, extra)
 
         # Flow matching loss: L2 between predicted and target velocity
         loss = torch.nn.functional.mse_loss(predicted_velocity, dx_t)
@@ -192,13 +191,12 @@ def validate(model, dataloader, path, device, args):
         x_t = path_sample.x_t
         dx_t = path_sample.dx_t
 
-        predicted_velocity = model(
-            x_t=x_t,
-            t=t,
-            x_prev_1=x_prev_1,
-            x_prev_2=x_prev_2,
-            case_params=case_params
-        )
+        extra = {
+            'x_prev_1': x_prev_1,
+            'x_prev_2': x_prev_2,
+            'case_params': case_params
+        }
+        predicted_velocity = model(x_t, t, extra)
 
         loss = torch.nn.functional.mse_loss(predicted_velocity, dx_t)
         total_loss += loss.item()
@@ -243,7 +241,12 @@ def sample_prediction(model, x_prev_1, x_prev_2, case_params, device, num_steps=
             batch_size = x.shape[0]
             if t.dim() == 0:
                 t = t.repeat(batch_size)
-            return self.model(x, t, self.x_prev_1, self.x_prev_2, self.case_params)
+            extra = {
+                'x_prev_1': self.x_prev_1,
+                'x_prev_2': self.x_prev_2,
+                'case_params': self.case_params
+            }
+            return self.model(x, t, extra)
 
     wrapped_model = ModelWrapper(model, x_prev_1, x_prev_2, case_params)
 
