@@ -77,7 +77,13 @@ class FluidPredictor:
                 batch_size = x.shape[0]
                 if t.dim() == 0:
                     t = t.repeat(batch_size)
-                return self.model(x, t, self.x_prev_1, self.x_prev_2, self.case_params)
+
+                extra = {
+                    'x_prev_1': self.x_prev_1,
+                    'x_prev_2': self.x_prev_2,
+                    'case_params': self.case_params
+                }
+                return self.model(x, t, extra)
 
         wrapped_model = ModelWrapper(self.model, x_prev_1, x_prev_2, case_params)
 

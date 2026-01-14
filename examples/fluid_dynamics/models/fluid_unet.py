@@ -298,20 +298,26 @@ class FluidDynamicsUNet(nn.Module):
             nn.Conv2d(ch, out_channels, 3, padding=1),
         )
 
-    def forward(self, x_t, t, x_prev_1, x_prev_2, case_params=None):
+    def forward(self, x_t, t, extra):
         """
         Forward pass of the UNet.
 
         Args:
             x_t: Current noisy state at time t, shape (B, 2, 64, 64)
             t: Flow matching timesteps in [0, 1], shape (B,)
-            x_prev_1: Previous state at t-1, shape (B, 2, 64, 64)
-            x_prev_2: Previous state at t-2, shape (B, 2, 64, 64)
-            case_params: Case parameters (e.g., Reynolds number, geometry), shape (B, num_case_params)
+            extra: Dictionary containing:
+                - 'x_prev_1': Previous state at t-1, shape (B, 2, 64, 64)
+                - 'x_prev_2': Previous state at t-2, shape (B, 2, 64, 64)
+                - 'case_params': Optional case parameters, shape (B, num_case_params)
 
         Returns:
             Predicted velocity field, shape (B, 2, 64, 64)
         """
+        # Extract arguments from extra dict
+        x_prev_1 = extra['x_prev_1']
+        x_prev_2 = extra['x_prev_2']
+        case_params = extra.get('case_params', None)
+
         # Time embedding
         time_emb = self.time_embed(t)
 
