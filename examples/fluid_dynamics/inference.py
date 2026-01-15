@@ -27,6 +27,8 @@ def parse_args():
                         help="Number of ODE integration steps")
     parser.add_argument("--num_predictions", type=int, default=10,
                         help="Number of autoregressive prediction steps")
+    parser.add_argument("--guidance_scale", type=float, default=1.0,
+                        help="Classifier-free guidance scale (1.0=no guidance, >1.0=stronger conditioning)")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
                         help="Device to use")
     parser.add_argument("--visualize", action="store_true",
@@ -44,15 +46,16 @@ class FluidPredictor:
         self.model.eval()
 
     @torch.no_grad()
-    def predict_next_state(self, x_prev_1, x_prev_2, case_params=None, num_steps=50):
+    def predict_next_state(self, x_prev_1, x_prev_2, case_params=None, num_steps=50, guidance_scale=1.0):
         """
-        Predict the next state given two previous states.
+        Predict the next state given two previous states with optional classifier-free guidance.
 
         Args:
             x_prev_1: Previous state at t-1, shape (B, 2, H, W)
             x_prev_2: Previous state at t-2, shape (B, 2, H, W)
             case_params: Optional case parameters, shape (B, D)
             num_steps: Number of ODE integration steps
+            guidance_scale: Classifier-free guidance scale (1.0=no guidance, >1.0=stronger)
 
         Returns:
             Predicted next state, shape (B, 2, H, W)
@@ -65,12 +68,13 @@ class FluidPredictor:
 
         # Create model wrapper for ODE solver
         class ModelWrapper(nn.Module):
-            def __init__(self, model, x_prev_1, x_prev_2, case_params):
+            def __init__(self, model, x_prev_1, x_prev_2, case_params, guidance_scale):
                 super().__init__()
                 self.model = model
                 self.x_prev_1 = x_prev_1
                 self.x_prev_2 = x_prev_2
                 self.case_params = case_params
+                self.guidance_scale = guidance_scale
 
             def forward(self, t, x):
                 # Handle both scalar and batched timesteps
@@ -78,14 +82,36 @@ class FluidPredictor:
                 if t.dim() == 0:
                     t = t.repeat(batch_size)
 
-                extra = {
-                    'x_prev_1': self.x_prev_1,
-                    'x_prev_2': self.x_prev_2,
-                    'case_params': self.case_params
-                }
-                return self.model(x, t, extra)
+                if self.guidance_scale == 1.0 or self.case_params is None:
+                    # No guidance or no case params
+                    extra = {
+                        'x_prev_1': self.x_prev_1,
+                        'x_prev_2': self.x_prev_2,
+                        'case_params': self.case_params
+                    }
+                    return self.model(x, t, extra)
+                else:
+                    # Classifier-free guidance
+                    # Conditional prediction
+                    extra_cond = {
+                        'x_prev_1': self.x_prev_1,
+                        'x_prev_2': self.x_prev_2,
+                        'case_params': self.case_params
+                    }
+                    v_cond = self.model(x, t, extra_cond)
 
-        wrapped_model = ModelWrapper(self.model, x_prev_1, x_prev_2, case_params)
+                    # Unconditional prediction
+                    extra_uncond = {
+                        'x_prev_1': self.x_prev_1,
+                        'x_prev_2': self.x_prev_2,
+                        'case_params': None
+                    }
+                    v_uncond = self.model(x, t, extra_uncond)
+
+                    # Guided velocity
+                    return v_uncond + self.guidance_scale * (v_cond - v_uncond)
+
+        wrapped_model = ModelWrapper(self.model, x_prev_1, x_prev_2, case_params, guidance_scale)
 
         # Create ODE solver
         solver = ODESolver(wrapped_model)
@@ -99,7 +125,7 @@ class FluidPredictor:
         return x_1
 
     @torch.no_grad()
-    def predict_sequence(self, x_init_1, x_init_2, case_params=None, num_predictions=10, num_steps=50):
+    def predict_sequence(self, x_init_1, x_init_2, case_params=None, num_predictions=10, num_steps=50, guidance_scale=1.0):
         """
         Perform autoregressive prediction for multiple timesteps.
 
@@ -109,6 +135,7 @@ class FluidPredictor:
             case_params: Optional case parameters, shape (B, D)
             num_predictions: Number of steps to predict
             num_steps: Number of ODE integration steps per prediction
+            guidance_scale: Classifier-free guidance scale
 
         Returns:
             List of predicted states, each of shape (B, 2, H, W)
@@ -119,7 +146,7 @@ class FluidPredictor:
 
         for i in range(num_predictions):
             # Predict next state
-            x_next = self.predict_next_state(x_prev_1, x_prev_2, case_params, num_steps)
+            x_next = self.predict_next_state(x_prev_1, x_prev_2, case_params, num_steps, guidance_scale)
             predictions.append(x_next.cpu())
 
             # Update history
@@ -242,12 +269,14 @@ def main():
     ground_truth = vector_fields[test_case_idx, 2:2+args.num_predictions]
 
     print(f"\nRunning autoregressive prediction for {args.num_predictions} steps...")
+    print(f"Using guidance scale: {args.guidance_scale}")
     predictions = predictor.predict_sequence(
         x_init_1,
         x_init_2,
         test_case_params,
         num_predictions=args.num_predictions,
         num_steps=args.num_steps,
+        guidance_scale=args.guidance_scale,
     )
 
     # Compute errors

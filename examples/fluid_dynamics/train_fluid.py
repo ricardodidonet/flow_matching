@@ -75,6 +75,8 @@ def parse_args():
     # Flow matching parameters
     parser.add_argument("--use_skewed_timesteps", action="store_true",
                         help="Use skewed timestep sampling (focus on difficult regions)")
+    parser.add_argument("--conditioning_drop_prob", type=float, default=0.1,
+                        help="Probability of dropping conditioning for classifier-free guidance (default: 0.1)")
 
     # System parameters
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu",
@@ -138,12 +140,23 @@ def train_epoch(model, dataloader, optimizer, path, device, args, epoch):
         x_t = path_sample.x_t  # Noisy interpolation
         dx_t = path_sample.dx_t  # Target velocity: x_1 - x_0
 
+        # Classifier-free guidance: randomly drop case_params
+        # Keep x_prev_1, x_prev_2 (essential for temporal prediction)
+        # Drop case_params (optional geometric/physical conditioning)
+        if torch.rand(1).item() < args.conditioning_drop_prob:
+            extra = {
+                'x_prev_1': x_prev_1,
+                'x_prev_2': x_prev_2,
+                'case_params': None  # Dropped for unconditional training
+            }
+        else:
+            extra = {
+                'x_prev_1': x_prev_1,
+                'x_prev_2': x_prev_2,
+                'case_params': case_params
+            }
+
         # Forward pass: predict velocity field conditioned on previous states
-        extra = {
-            'x_prev_1': x_prev_1,
-            'x_prev_2': x_prev_2,
-            'case_params': case_params
-        }
         predicted_velocity = model(x_t, t, extra)
 
         # Flow matching loss: L2 between predicted and target velocity
@@ -207,9 +220,9 @@ def validate(model, dataloader, path, device, args):
 
 
 @torch.no_grad()
-def sample_prediction(model, x_prev_1, x_prev_2, case_params, device, num_steps=50):
+def sample_prediction(model, x_prev_1, x_prev_2, case_params, device, num_steps=50, guidance_scale=1.0):
     """
-    Generate a prediction by sampling from the learned flow.
+    Generate a prediction by sampling from the learned flow with optional classifier-free guidance.
 
     This uses the ODE solver to integrate the learned velocity field
     from noise (t=0) to data (t=1).
@@ -221,6 +234,7 @@ def sample_prediction(model, x_prev_1, x_prev_2, case_params, device, num_steps=
         case_params: Case parameters, shape (B, D)
         device: Device
         num_steps: Number of ODE integration steps
+        guidance_scale: Classifier-free guidance scale (1.0 = no guidance, >1.0 = stronger conditioning)
 
     Returns:
         Predicted next state, shape (B, 2, H, W)
@@ -229,26 +243,50 @@ def sample_prediction(model, x_prev_1, x_prev_2, case_params, device, num_steps=
 
     # Create a wrapper for the model that has the right signature for ODESolver
     class ModelWrapper(nn.Module):
-        def __init__(self, model, x_prev_1, x_prev_2, case_params):
+        def __init__(self, model, x_prev_1, x_prev_2, case_params, guidance_scale):
             super().__init__()
             self.model = model
             self.x_prev_1 = x_prev_1
             self.x_prev_2 = x_prev_2
             self.case_params = case_params
+            self.guidance_scale = guidance_scale
 
         def forward(self, t, x):
             # t is a scalar, we need to broadcast to batch size
             batch_size = x.shape[0]
             if t.dim() == 0:
                 t = t.repeat(batch_size)
-            extra = {
-                'x_prev_1': self.x_prev_1,
-                'x_prev_2': self.x_prev_2,
-                'case_params': self.case_params
-            }
-            return self.model(x, t, extra)
 
-    wrapped_model = ModelWrapper(model, x_prev_1, x_prev_2, case_params)
+            if self.guidance_scale == 1.0 or self.case_params is None:
+                # No guidance or no case params - standard prediction
+                extra = {
+                    'x_prev_1': self.x_prev_1,
+                    'x_prev_2': self.x_prev_2,
+                    'case_params': self.case_params
+                }
+                return self.model(x, t, extra)
+            else:
+                # Classifier-free guidance
+                # Conditional prediction
+                extra_cond = {
+                    'x_prev_1': self.x_prev_1,
+                    'x_prev_2': self.x_prev_2,
+                    'case_params': self.case_params
+                }
+                v_cond = self.model(x, t, extra_cond)
+
+                # Unconditional prediction (drop case_params)
+                extra_uncond = {
+                    'x_prev_1': self.x_prev_1,
+                    'x_prev_2': self.x_prev_2,
+                    'case_params': None
+                }
+                v_uncond = self.model(x, t, extra_uncond)
+
+                # Guided velocity: v = v_uncond + guidance_scale * (v_cond - v_uncond)
+                return v_uncond + self.guidance_scale * (v_cond - v_uncond)
+
+    wrapped_model = ModelWrapper(model, x_prev_1, x_prev_2, case_params, guidance_scale)
 
     # Create ODE solver
     solver = ODESolver(wrapped_model)
