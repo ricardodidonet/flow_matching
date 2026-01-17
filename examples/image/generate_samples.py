@@ -86,7 +86,8 @@ def load_checkpoint(checkpoint_path, dataset, use_ema, device):
     )
 
     # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location='cpu')
+    # Note: weights_only=False is safe here since this is your own checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location='cpu', weights_only=False)
 
     # Handle EMA models
     if use_ema and isinstance(model, EMA):
